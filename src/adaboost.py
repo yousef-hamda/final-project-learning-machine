@@ -8,7 +8,8 @@ warnings.filterwarnings('ignore')
 class DecisionStump:
     """
     Simple decision tree with depth 1 - basically just one split
-    I learned this is called a "stump" because it's like a tree that got cut down
+    This is called a "stump" because it's like a tree that has been cut down
+    Enhanced version with better error handling
     """
     
     def __init__(self):
@@ -19,8 +20,12 @@ class DecisionStump:
     
     def predict(self, X):
         """
-        Make predictions - pretty straightforward
+        Make predictions - straightforward implementation
+        Enhanced with better array handling
         """
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+        
         num_samples = X.shape[0]
         predictions = np.ones(num_samples)  # start with all 1s
         
@@ -35,8 +40,8 @@ class DecisionStump:
 class AdaBoost:
     """
     AdaBoost implementation from scratch
-    This was harder than I thought! Had to read the paper like 3 times
-    Based on Freund & Schapire 1997
+    Enhanced version with better numerical stability and error handling
+    Based on Freund & Schapire 1997 with improvements for robustness
     """
     
     def __init__(self, num_estimators=50, learning_rate=1.0, random_state=None):
@@ -57,6 +62,8 @@ class AdaBoost:
         self.stump_weights = []       # alpha values for each stump
         self.training_errors = []     # keep track of errors for analysis
         self.feature_names = None
+        self.n_features = None
+        self.feature_importances_ = None
         
         if random_state is not None:
             np.random.seed(random_state)
@@ -64,13 +71,15 @@ class AdaBoost:
     def _convert_labels_to_binary(self, y):
         """
         AdaBoost needs labels to be +1 and -1, not 0 and 1
-        Had to figure this out the hard way...
+        Enhanced version with better label mapping
         """
         unique_labels = np.unique(y)
         
         if len(unique_labels) == 2:
             # Binary classification - map to -1 and +1
-            label_mapping = {unique_labels[0]: -1, unique_labels[1]: 1}
+            # Ensure consistent mapping: smaller value -> -1, larger value -> +1
+            sorted_labels = np.sort(unique_labels)
+            label_mapping = {sorted_labels[0]: -1, sorted_labels[1]: 1}
             binary_labels = np.array([label_mapping[label] for label in y])
             return binary_labels, label_mapping
         else:
@@ -85,6 +94,7 @@ class AdaBoost:
         """
         Find the decision stump that minimizes weighted error
         This is the core of AdaBoost - finding weak learners
+        Enhanced version with better numerical stability
         """
         num_samples, num_features = X.shape
         best_stump = DecisionStump()
@@ -93,10 +103,21 @@ class AdaBoost:
         # Try every feature
         for feature_idx in range(num_features):
             feature_values = X[:, feature_idx]
-            unique_vals = np.unique(feature_values)
             
-            # Try every unique value as a threshold
-            for threshold in unique_vals:
+            # Get sorted unique values for better threshold selection
+            sorted_indices = np.argsort(feature_values)
+            sorted_values = feature_values[sorted_indices]
+            sorted_labels = y[sorted_indices]
+            sorted_weights = sample_weights[sorted_indices]
+            
+            # Try thresholds between consecutive different values
+            unique_values = []
+            for i in range(len(sorted_values)):
+                if i == 0 or sorted_values[i] != sorted_values[i-1]:
+                    unique_values.append(sorted_values[i])
+            
+            # Try each unique value as threshold
+            for threshold in unique_values:
                 # Try both polarities (< vs >=)
                 for polarity in [1, -1]:
                     # Create predictions for this stump
@@ -111,6 +132,9 @@ class AdaBoost:
                     wrong_predictions = predictions != y
                     weighted_error = np.sum(sample_weights[wrong_predictions])
                     
+                    # Add small epsilon to avoid exact zero error
+                    weighted_error = max(weighted_error, 1e-10)
+                    
                     # Keep track of best stump so far
                     if weighted_error < min_error:
                         min_error = weighted_error
@@ -123,7 +147,7 @@ class AdaBoost:
     def fit(self, X, y):
         """
         Train the AdaBoost classifier
-        This is where the magic happens!
+        Enhanced version with better error handling and numerical stability
         """
         # Handle pandas input
         if isinstance(X, pd.DataFrame):
@@ -131,6 +155,9 @@ class AdaBoost:
             X = X.values
         if isinstance(y, pd.Series):
             y = y.values
+        
+        # Store number of features
+        self.n_features = X.shape[1]
         
         # Convert to binary labels
         binary_y, self.label_mapping = self._convert_labels_to_binary(y)
@@ -155,8 +182,6 @@ class AdaBoost:
             
             # Step 2: Check if we should stop
             # If error >= 0.5, the classifier is worse than random
-            if min_error <= 0:
-                min_error = 1e-10  # avoid log(0)
             if min_error >= 0.5:
                 if iteration == 0:
                     # If first classifier is bad, use it anyway but with tiny weight
@@ -164,6 +189,10 @@ class AdaBoost:
                 else:
                     print(f"Stopping at iteration {iteration}: error {min_error:.4f} >= 0.5")
                     break
+            
+            # Ensure minimum error to avoid numerical issues
+            min_error = max(min_error, 1e-10)
+            min_error = min(min_error, 1 - 1e-10)
             
             # Step 3: Calculate classifier weight (alpha)
             # This is the famous AdaBoost formula!
@@ -176,10 +205,16 @@ class AdaBoost:
             # Step 5: Update sample weights
             # Increase weight of misclassified samples, decrease weight of correct ones
             # This makes the next classifier focus on the mistakes
-            sample_weights *= np.exp(-alpha * binary_y * stump_predictions)
+            weight_multiplier = np.exp(-alpha * binary_y * stump_predictions)
+            sample_weights *= weight_multiplier
             
             # Step 6: Normalize weights so they sum to 1
-            sample_weights /= np.sum(sample_weights)
+            weight_sum = np.sum(sample_weights)
+            if weight_sum > 0:
+                sample_weights /= weight_sum
+            else:
+                # Fallback to uniform weights if all weights become zero
+                sample_weights = np.full(num_samples, 1.0 / num_samples)
             
             # Save this classifier and its stats
             self.stumps.append(best_stump)
@@ -191,12 +226,38 @@ class AdaBoost:
                 print(f"Iteration {iteration + 1}/{self.num_estimators}: "
                       f"error = {min_error:.4f}, α = {alpha:.4f}")
         
+        # Calculate feature importances
+        self._calculate_feature_importances()
+        
         print(f"Training complete! Created {len(self.stumps)} weak learners.")
         return self
+    
+    def _calculate_feature_importances(self):
+        """
+        Calculate which features are used most often, weighted by stump importance
+        Enhanced version with proper normalization
+        """
+        if not self.stumps or self.n_features is None:
+            self.feature_importances_ = None
+            return
+        
+        importance_scores = np.zeros(self.n_features)
+        
+        # Weight by stump importance (alpha values)
+        for stump, weight in zip(self.stumps, self.stump_weights):
+            if stump.feature_idx is not None:
+                importance_scores[stump.feature_idx] += abs(weight)
+        
+        # Normalize to get relative importance
+        if np.sum(importance_scores) > 0:
+            importance_scores = importance_scores / np.sum(importance_scores)
+        
+        self.feature_importances_ = importance_scores
     
     def _predict_binary(self, X):
         """
         Make binary predictions by combining all stumps
+        Enhanced with better numerical handling
         """
         if isinstance(X, pd.DataFrame):
             X = X.values
@@ -215,13 +276,14 @@ class AdaBoost:
     def predict(self, X):
         """
         Make predictions and convert back to original labels
+        Enhanced with better label conversion
         """
         binary_preds = self._predict_binary(X)
         
         # Convert binary predictions back to original labels
         original_preds = []
         for pred in binary_preds:
-            if pred == 1:
+            if pred >= 0:  # Use >= instead of == for better numerical stability
                 # Find original label for +1
                 for orig_label, binary_label in self.label_mapping.items():
                     if binary_label == 1:
@@ -239,7 +301,7 @@ class AdaBoost:
     def predict_proba(self, X):
         """
         Get prediction probabilities using decision function
-        Not as clean as other methods but works reasonably well
+        Enhanced version with better probability calibration
         """
         if isinstance(X, pd.DataFrame):
             X = X.values
@@ -253,7 +315,8 @@ class AdaBoost:
             decision_scores += weight * stump_pred
         
         # Convert to probabilities using sigmoid-like function
-        # This isn't perfect but gives reasonable probability estimates
+        # Enhanced with better numerical stability
+        decision_scores = np.clip(decision_scores, -250, 250)  # Prevent overflow
         probabilities = 1 / (1 + np.exp(-2 * decision_scores))
         
         # Create probability matrix for both classes
@@ -263,24 +326,14 @@ class AdaBoost:
     
     def feature_importance(self):
         """
-        Calculate which features are used most often
-        Simple approach: count how often each feature is used
+        Get feature importance scores
+        
+        Returns:
+        --------
+        array-like
+            Feature importance scores (normalized to sum to 1)
         """
-        if not self.stumps:
-            return None
-        
-        num_features = len(self.feature_names) if self.feature_names else max(stump.feature_idx for stump in self.stumps) + 1
-        importance_scores = np.zeros(num_features)
-        
-        # Weight by stump importance (alpha values)
-        for stump, weight in zip(self.stumps, self.stump_weights):
-            importance_scores[stump.feature_idx] += weight
-        
-        # Normalize to get relative importance
-        if np.sum(importance_scores) > 0:
-            importance_scores = importance_scores / np.sum(importance_scores)
-        
-        return importance_scores
+        return self.feature_importances_
     
     def get_training_stats(self):
         """
@@ -301,7 +354,7 @@ class AdaBoost:
         details = []
         for i, (stump, weight) in enumerate(zip(self.stumps, self.stump_weights)):
             feature_name = f"feature_{stump.feature_idx}"
-            if self.feature_names:
+            if self.feature_names and stump.feature_idx < len(self.feature_names):
                 feature_name = self.feature_names[stump.feature_idx]
             
             detail = {
@@ -320,7 +373,7 @@ class AdaBoost:
     def staged_predict(self, X):
         """
         See how predictions change as we add more stumps
-        This is cool for visualizing how AdaBoost improves over time
+        This is useful for visualizing how AdaBoost improves over time
         """
         if isinstance(X, pd.DataFrame):
             X = X.values
@@ -338,7 +391,7 @@ class AdaBoost:
             
             original_pred = []
             for pred in binary_pred:
-                if pred == 1:
+                if pred >= 0:
                     for orig_label, binary_label in self.label_mapping.items():
                         if binary_label == 1:
                             original_pred.append(orig_label)
@@ -352,6 +405,24 @@ class AdaBoost:
             staged_preds.append(np.array(original_pred))
         
         return staged_preds
+    
+    def decision_function(self, X):
+        """
+        Calculate the decision function values
+        Useful for understanding confidence in predictions
+        """
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+        
+        num_samples = X.shape[0]
+        decision_scores = np.zeros(num_samples)
+        
+        # Calculate weighted sum of stump predictions
+        for stump, weight in zip(self.stumps, self.stump_weights):
+            stump_pred = stump.predict(X)
+            decision_scores += weight * stump_pred
+        
+        return decision_scores
 
 # Test the implementation
 if __name__ == "__main__":

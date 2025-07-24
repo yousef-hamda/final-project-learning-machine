@@ -11,17 +11,20 @@ class RandomForestNode:
     Node structure for Random Forest trees
     Similar to DecisionTreeNode but optimized for ensemble learning
     """
-    def __init__(self, feature_index=None, threshold=None, left=None, right=None, value=None):
+    def __init__(self, feature_index=None, threshold=None, left=None, right=None, value=None, samples=0, impurity=0.0):
         self.feature_index = feature_index    # Which feature to split on
         self.threshold = threshold            # Split threshold value
         self.left = left                      # Left child node
         self.right = right                    # Right child node
         self.value = value                    # Predicted class (for leaf nodes)
+        self.samples = samples                # Number of samples in this node
+        self.impurity = impurity             # Impurity of this node
 
 class RandomForestTree:
     """
     Individual decision tree optimized for Random Forest
     Incorporates feature randomness and bootstrap sampling
+    Enhanced version with proper feature importance calculation
     """
     
     def __init__(self, max_depth=10, min_samples_split=2, min_samples_leaf=1, 
@@ -52,6 +55,8 @@ class RandomForestTree:
         self.random_state = random_state
         self.root = None
         self.feature_indices = None
+        self.n_features = None
+        self.feature_importances_ = None
         
         # Set random seed for reproducible results
         if random_state is not None:
@@ -118,6 +123,13 @@ class RandomForestTree:
         if self.max_features is None:
             # Default: square root of total features
             max_features = int(np.sqrt(n_features))
+        elif isinstance(self.max_features, str):
+            if self.max_features == 'sqrt':
+                max_features = int(np.sqrt(n_features))
+            elif self.max_features == 'log2':
+                max_features = int(np.log2(n_features))
+            else:
+                max_features = n_features
         elif isinstance(self.max_features, int):
             max_features = min(self.max_features, n_features)
         elif isinstance(self.max_features, float):
@@ -125,6 +137,9 @@ class RandomForestTree:
             max_features = int(self.max_features * n_features)
         else:
             max_features = n_features
+        
+        # Ensure at least one feature is selected
+        max_features = max(1, max_features)
         
         # Randomly select features without replacement
         feature_indices = np.random.choice(n_features, 
@@ -136,6 +151,7 @@ class RandomForestTree:
         """
         Find best split considering only a random subset of features
         This implements the feature randomness aspect of Random Forest
+        Enhanced version with better split finding
         
         Parameters:
         -----------
@@ -161,26 +177,32 @@ class RandomForestTree:
         # Only consider the randomly selected features
         for feature_index in random_features:
             feature_values = X[:, feature_index]
-            unique_values = np.unique(feature_values)
+            
+            # Sort values for efficient threshold selection
+            sorted_indices = np.argsort(feature_values)
+            sorted_values = feature_values[sorted_indices]
+            sorted_labels = y[sorted_indices]
             
             # Skip if all values are the same
-            if len(unique_values) <= 1:
+            if len(np.unique(sorted_values)) <= 1:
                 continue
             
-            # Try different thresholds
-            for i in range(len(unique_values) - 1):
-                threshold = (unique_values[i] + unique_values[i + 1]) / 2
-                
-                left_mask = feature_values <= threshold
-                right_mask = feature_values > threshold
-                
-                left_y = y[left_mask]
-                right_y = y[right_mask]
-                
-                if len(left_y) == 0 or len(right_y) == 0:
+            # Try different thresholds between consecutive unique values
+            for i in range(len(sorted_values) - 1):
+                if sorted_values[i] == sorted_values[i + 1]:
                     continue
                 
-                gain = self._calculate_information_gain(y, left_y, right_y)
+                threshold = (sorted_values[i] + sorted_values[i + 1]) / 2
+                
+                left_y = sorted_labels[:i + 1]
+                right_y = sorted_labels[i + 1:]
+                
+                # Check minimum samples constraint
+                if (len(left_y) < self.min_samples_leaf or 
+                    len(right_y) < self.min_samples_leaf):
+                    continue
+                
+                gain = self._calculate_information_gain(sorted_labels, left_y, right_y)
                 
                 if gain > best_gain:
                     best_gain = gain
@@ -190,22 +212,26 @@ class RandomForestTree:
         return best_feature_index, best_threshold, best_gain
     
     def _build_tree(self, X, y, depth=0):
-        """Recursively build the decision tree"""
+        """Recursively build the decision tree with enhanced node information"""
         n_samples, n_features = X.shape
         n_classes = len(np.unique(y))
+        
+        # Calculate current impurity
+        current_impurity = self._calculate_impurity(y)
         
         # Stopping criteria
         if (depth >= self.max_depth or 
             n_samples < self.min_samples_split or 
-            n_classes == 1):
+            n_classes == 1 or
+            current_impurity == 0):
             most_common_class = Counter(y).most_common(1)[0][0]
-            return RandomForestNode(value=most_common_class)
+            return RandomForestNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         best_feature, best_threshold, best_gain = self._find_best_split(X, y)
         
         if best_feature is None or best_gain <= 0:
             most_common_class = Counter(y).most_common(1)[0][0]
-            return RandomForestNode(value=most_common_class)
+            return RandomForestNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         left_mask = X[:, best_feature] <= best_threshold
         right_mask = X[:, best_feature] > best_threshold
@@ -215,7 +241,7 @@ class RandomForestTree:
         
         if len(y_left) < self.min_samples_leaf or len(y_right) < self.min_samples_leaf:
             most_common_class = Counter(y).most_common(1)[0][0]
-            return RandomForestNode(value=most_common_class)
+            return RandomForestNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         left_subtree = self._build_tree(X_left, y_left, depth + 1)
         right_subtree = self._build_tree(X_right, y_right, depth + 1)
@@ -224,7 +250,9 @@ class RandomForestTree:
             feature_index=best_feature,
             threshold=best_threshold,
             left=left_subtree,
-            right=right_subtree
+            right=right_subtree,
+            samples=n_samples,
+            impurity=current_impurity
         )
     
     def fit(self, X, y):
@@ -234,8 +262,56 @@ class RandomForestTree:
         if isinstance(y, pd.Series):
             y = y.values
         
+        self.n_features = X.shape[1]
         self.root = self._build_tree(X, y)
+        
+        # Calculate feature importances
+        self._calculate_feature_importances(X, y)
+        
         return self
+    
+    def _calculate_feature_importances(self, X, y):
+        """
+        Calculate feature importance based on impurity decrease
+        Enhanced version similar to decision tree
+        """
+        # Initialize importance scores
+        importances = np.zeros(self.n_features)
+        
+        def calculate_importance_recursive(node, n_node_samples):
+            """Recursively calculate importance for each feature used in tree"""
+            if node.value is not None:  # Leaf node
+                return
+            
+            # Calculate importance for this split
+            feature_idx = node.feature_index
+            
+            # Get left and right child information
+            n_left = node.left.samples
+            n_right = node.right.samples
+            
+            # Calculate weighted impurity decrease
+            importance = (n_node_samples / X.shape[0]) * (
+                node.impurity - 
+                (n_left / n_node_samples) * node.left.impurity -
+                (n_right / n_node_samples) * node.right.impurity
+            )
+            
+            # Add to feature importance
+            importances[feature_idx] += importance
+            
+            # Recursively calculate for child nodes
+            calculate_importance_recursive(node.left, n_left)
+            calculate_importance_recursive(node.right, n_right)
+        
+        # Calculate importance starting from root
+        if self.root is not None:
+            calculate_importance_recursive(self.root, self.root.samples)
+        
+        # Normalize importances to sum to 1
+        if np.sum(importances) > 0:
+            importances = importances / np.sum(importances)
+        
     
     def _predict_sample(self, x, node):
         """Predict single sample by traversing the tree"""
@@ -263,11 +339,12 @@ class RandomForest:
     """
     Random Forest classifier implementation from scratch
     Combines multiple decision trees with bootstrap sampling and feature randomness
+    Enhanced version with proper feature importance calculation and out-of-bag scoring
     """
     
     def __init__(self, n_estimators=100, max_depth=10, min_samples_split=2, 
                  min_samples_leaf=1, max_features='sqrt', criterion='gini',
-                 bootstrap=True, random_state=None, n_jobs=1):
+                 bootstrap=True, oob_score=False, random_state=None, n_jobs=1):
         """
         Initialize Random Forest classifier
         
@@ -291,6 +368,8 @@ class RandomForest:
             Split quality criterion ('gini' or 'entropy')
         bootstrap : bool
             Whether to use bootstrap sampling for training each tree
+        oob_score : bool
+            Whether to calculate out-of-bag score
         random_state : int
             Random seed for reproducibility
         n_jobs : int
@@ -303,11 +382,16 @@ class RandomForest:
         self.max_features = max_features
         self.criterion = criterion
         self.bootstrap = bootstrap
+        self.oob_score = oob_score
         self.random_state = random_state
         self.n_jobs = n_jobs
         
         self.trees = []                       # List to store individual trees
         self.feature_names = None             # Feature names for interpretation
+        self.n_features = None                # Number of features
+        self.feature_importances_ = None      # Feature importance scores
+        self.oob_score_ = None                # Out-of-bag score
+        self.oob_indices = []                 # Out-of-bag indices for each tree
         
         # Set random seed for reproducibility
         if random_state is not None:
@@ -318,6 +402,7 @@ class RandomForest:
         """
         Create a bootstrap sample from the training data
         Bootstrap sampling involves sampling with replacement
+        Enhanced version that also returns out-of-bag indices
         
         Parameters:
         -----------
@@ -331,7 +416,7 @@ class RandomForest:
         Returns:
         --------
         tuple
-            (X_bootstrap, y_bootstrap) - Bootstrap sample
+            (X_bootstrap, y_bootstrap, oob_indices) - Bootstrap sample and OOB indices
         """
         if random_state is not None:
             np.random.seed(random_state)
@@ -341,16 +426,20 @@ class RandomForest:
         if self.bootstrap:
             # Sample with replacement (bootstrap)
             indices = np.random.choice(n_samples, size=n_samples, replace=True)
+            # Out-of-bag indices are those not selected
+            oob_indices = np.setdiff1d(np.arange(n_samples), np.unique(indices))
         else:
             # Use all data without replacement
             indices = np.arange(n_samples)
+            oob_indices = np.array([])  # No OOB samples when not bootstrapping
         
-        return X[indices], y[indices]
+        return X[indices], y[indices], oob_indices
     
     def _train_single_tree(self, tree_idx, X, y):
         """
         Train a single tree in the forest
         Each tree gets a different bootstrap sample and random seed
+        Enhanced version that returns both tree and OOB indices
         
         Parameters:
         -----------
@@ -363,8 +452,8 @@ class RandomForest:
             
         Returns:
         --------
-        RandomForestTree
-            Trained tree object
+        tuple
+            (RandomForestTree, oob_indices) - Trained tree and OOB indices
         """
         # Create unique random state for this tree
         tree_random_state = None
@@ -372,7 +461,7 @@ class RandomForest:
             tree_random_state = self.random_state + tree_idx
         
         # Create bootstrap sample for this tree
-        X_bootstrap, y_bootstrap = self._bootstrap_sample(X, y, tree_random_state)
+        X_bootstrap, y_bootstrap, oob_indices = self._bootstrap_sample(X, y, tree_random_state)
         
         # Create and train the tree
         tree = RandomForestTree(
@@ -385,11 +474,56 @@ class RandomForest:
         )
         
         tree.fit(X_bootstrap, y_bootstrap)
-        return tree
+        return tree, oob_indices
+    
+    def _calculate_oob_score(self, X, y):
+        """
+        Calculate out-of-bag score using predictions from trees that didn't see each sample
+        This provides an unbiased estimate of model performance
+        
+        Parameters:
+        -----------
+        X : array-like
+            Training features
+        y : array-like
+            Training labels
+        """
+        if not self.bootstrap or len(self.oob_indices) == 0:
+            return
+        
+        n_samples = X.shape[0]
+        oob_predictions = np.full(n_samples, -1)  # -1 indicates no prediction
+        oob_vote_counts = np.zeros((n_samples, len(np.unique(y))))
+        classes = np.unique(y)
+        
+        # For each sample, collect predictions from trees that didn't see it
+        for tree_idx, (tree, oob_idx) in enumerate(zip(self.trees, self.oob_indices)):
+            if len(oob_idx) > 0:
+                # Get predictions for OOB samples
+                oob_pred = tree.predict(X[oob_idx])
+                
+                # Count votes for each class
+                for i, sample_idx in enumerate(oob_idx):
+                    pred_class = oob_pred[i]
+                    class_idx = np.where(classes == pred_class)[0][0]
+                    oob_vote_counts[sample_idx, class_idx] += 1
+        
+        # Make final predictions based on majority vote
+        for i in range(n_samples):
+            if np.sum(oob_vote_counts[i]) > 0:  # If this sample was OOB for any tree
+                oob_predictions[i] = classes[np.argmax(oob_vote_counts[i])]
+        
+        # Calculate accuracy for samples that have OOB predictions
+        valid_predictions = oob_predictions != -1
+        if np.sum(valid_predictions) > 0:
+            self.oob_score_ = np.mean(oob_predictions[valid_predictions] == y[valid_predictions])
+        else:
+            self.oob_score_ = None
     
     def fit(self, X, y):
         """
         Train the Random Forest on the given data
+        Enhanced version with proper feature importance and OOB scoring
         
         Parameters:
         -----------
@@ -410,6 +544,8 @@ class RandomForest:
         if isinstance(y, pd.Series):
             y = y.values
         
+        self.n_features = X.shape[1]
+        
         print(f"Training Random Forest...")
         print(f"Dataset: {X.shape[0]} samples, {X.shape[1]} features")
         print(f"Forest: {self.n_estimators} trees")
@@ -417,12 +553,14 @@ class RandomForest:
         print(f"Bootstrap sampling: {self.bootstrap}")
         
         self.trees = []
+        self.oob_indices = []
         
         if self.n_jobs == 1:
             # Sequential training (easier to debug)
             for i in range(self.n_estimators):
-                tree = self._train_single_tree(i, X, y)
+                tree, oob_idx = self._train_single_tree(i, X, y)
                 self.trees.append(tree)
+                self.oob_indices.append(oob_idx)
                 
                 # Progress indicator
                 if (i + 1) % 10 == 0:
@@ -437,14 +575,45 @@ class RandomForest:
                     futures.append(future)
                 
                 for i, future in enumerate(futures):
-                    tree = future.result()
+                    tree, oob_idx = future.result()
                     self.trees.append(tree)
+                    self.oob_indices.append(oob_idx)
                     
                     if (i + 1) % 10 == 0:
                         print(f"Completed {i + 1}/{self.n_estimators} trees")
         
+        # Calculate feature importances
+        self._calculate_feature_importances()
+        
+        # Calculate out-of-bag score if requested
+        if self.oob_score:
+            self._calculate_oob_score(X, y)
+            if self.oob_score_ is not None:
+                print(f"Out-of-bag score: {self.oob_score_:.4f}")
+        
         print("✅ Random Forest training completed!")
         return self
+    
+    def _calculate_feature_importances(self):
+        """
+        Calculate feature importance as the average importance across all trees
+        Enhanced version using proper impurity-based importance
+        """
+        if not self.trees or self.n_features is None:
+            return
+        
+        # Average feature importances across all trees
+        total_importances = np.zeros(self.n_features)
+        
+        for tree in self.trees:
+            if hasattr(tree, 'feature_importances_') and tree.feature_importances_ is not None:
+                total_importances += tree.feature_importances_
+        
+        # Normalize to get average importance
+        if np.sum(total_importances) > 0:
+            self.feature_importances_ = total_importances / len(self.trees)
+        else:
+            self.feature_importances_ = total_importances
     
     def predict(self, X):
         """
@@ -525,45 +694,14 @@ class RandomForest:
     
     def feature_importance(self):
         """
-        Calculate feature importance as the average usage across all trees
-        Features used more frequently in splits are considered more important
+        Get feature importance scores
         
         Returns:
         --------
         array-like
             Feature importance scores (normalized to sum to 1)
         """
-        if not self.trees:
-            return None
-        
-        n_features = len(self.feature_names) if self.feature_names else None
-        if n_features is None:
-            return None
-        
-        # Count how often each feature is used for splitting
-        feature_usage = np.zeros(n_features)
-        
-        def count_feature_usage(node):
-            """Recursively count feature usage in tree"""
-            if node is None or node.value is not None:
-                return
-            
-            # Count this feature usage
-            feature_usage[node.feature_index] += 1
-            
-            # Recursively count in children
-            count_feature_usage(node.left)
-            count_feature_usage(node.right)
-        
-        # Count feature usage across all trees
-        for tree in self.trees:
-            count_feature_usage(tree.root)
-        
-        # Normalize to get importance scores
-        if np.sum(feature_usage) > 0:
-            feature_usage = feature_usage / np.sum(feature_usage)
-        
-        return feature_usage
+        return self.feature_importances_
     
     def get_params(self):
         """Get hyperparameters of the Random Forest"""
@@ -575,6 +713,7 @@ class RandomForest:
             'max_features': self.max_features,
             'criterion': self.criterion,
             'bootstrap': self.bootstrap,
+            'oob_score': self.oob_score,
             'random_state': self.random_state
         }
 
@@ -604,7 +743,8 @@ if __name__ == "__main__":
     start_time = time.time()
     
     rf = RandomForest(n_estimators=50, max_depth=8, max_features='sqrt', 
-                     criterion='gini', random_state=42, n_jobs=1)
+                     criterion='gini', bootstrap=True, oob_score=True, 
+                     random_state=42, n_jobs=1)
     rf.fit(X_train, y_train)
     
     training_time = time.time() - start_time

@@ -8,7 +8,7 @@ class DecisionTreeNode:
     A single node in the decision tree structure
     Each node represents either a decision point or a leaf with a prediction
     """
-    def __init__(self, feature_index=None, threshold=None, left=None, right=None, value=None):
+    def __init__(self, feature_index=None, threshold=None, left=None, right=None, value=None, samples=0, impurity=0.0):
         # For internal nodes (decision points)
         self.feature_index = feature_index    # Which feature to split on
         self.threshold = threshold            # The value to split the feature at
@@ -17,11 +17,16 @@ class DecisionTreeNode:
         
         # For leaf nodes (final predictions)
         self.value = value                    # The predicted class for this leaf
+        
+        # Additional information for feature importance calculation
+        self.samples = samples                # Number of samples in this node
+        self.impurity = impurity             # Impurity of this node
 
 class DecisionTree:
     """
     Complete Decision Tree implementation from scratch for classification
     Uses information theory (Gini or Entropy) to find the best splits
+    Enhanced version with proper feature importance calculation
     """
     
     def __init__(self, max_depth=10, min_samples_split=2, min_samples_leaf=1, criterion='gini'):
@@ -45,6 +50,8 @@ class DecisionTree:
         self.criterion = criterion
         self.root = None                      # Root node of the tree
         self.feature_names = None             # Names of features for interpretation
+        self.n_features = None                # Number of features
+        self.feature_importances_ = None      # Feature importance scores
     
     def _calculate_gini(self, y):
         """
@@ -171,6 +178,7 @@ class DecisionTree:
         """
         Find the best feature and threshold to split the data
         Tests all possible splits and returns the one with highest information gain
+        Enhanced version with sorted values for better performance
         
         Parameters:
         -----------
@@ -193,26 +201,32 @@ class DecisionTree:
         # Try every feature as a potential split
         for feature_index in range(n_features):
             feature_values = X[:, feature_index]
-            unique_values = np.unique(feature_values)
             
-            # Try every adjacent pair of unique values as threshold
-            for i in range(len(unique_values) - 1):
-                # Use midpoint between adjacent unique values as threshold
-                threshold = (unique_values[i] + unique_values[i + 1]) / 2
+            # Sort the feature values along with corresponding labels
+            sorted_indices = np.argsort(feature_values)
+            sorted_values = feature_values[sorted_indices]
+            sorted_labels = y[sorted_indices]
+            
+            # Try thresholds between consecutive unique values
+            for i in range(len(sorted_values) - 1):
+                # Skip if values are the same
+                if sorted_values[i] == sorted_values[i + 1]:
+                    continue
+                
+                # Use midpoint as threshold
+                threshold = (sorted_values[i] + sorted_values[i + 1]) / 2
                 
                 # Split data based on this threshold
-                left_mask = feature_values <= threshold
-                right_mask = feature_values > threshold
+                left_y = sorted_labels[:i + 1]
+                right_y = sorted_labels[i + 1:]
                 
-                left_y = y[left_mask]
-                right_y = y[right_mask]
-                
-                # Skip if split results in empty children
-                if len(left_y) == 0 or len(right_y) == 0:
+                # Skip if split results in empty children or violates min_samples_leaf
+                if (len(left_y) < self.min_samples_leaf or 
+                    len(right_y) < self.min_samples_leaf):
                     continue
                 
                 # Calculate information gain for this split
-                gain = self._calculate_information_gain(y, left_y, right_y)
+                gain = self._calculate_information_gain(sorted_labels, left_y, right_y)
                 
                 # Update best split if this is better
                 if gain > best_gain:
@@ -226,6 +240,7 @@ class DecisionTree:
         """
         Recursively build the decision tree
         This is the core algorithm that creates the tree structure
+        Enhanced version with proper node information for feature importance
         
         Parameters:
         -----------
@@ -244,14 +259,18 @@ class DecisionTree:
         n_samples, n_features = X.shape
         n_classes = len(np.unique(y))
         
+        # Calculate current impurity
+        current_impurity = self._calculate_impurity(y)
+        
         # Stopping criteria - create leaf node if any condition is met
         if (depth >= self.max_depth or                    # Maximum depth reached
             n_samples < self.min_samples_split or         # Too few samples to split
-            n_classes == 1):                              # All samples same class
+            n_classes == 1 or                             # All samples same class
+            current_impurity == 0):                       # Pure node
             
             # Create leaf node with most common class
             most_common_class = Counter(y).most_common(1)[0][0]
-            return DecisionTreeNode(value=most_common_class)
+            return DecisionTreeNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         # Find the best way to split current data
         best_feature, best_threshold, best_gain = self._find_best_split(X, y)
@@ -259,7 +278,7 @@ class DecisionTree:
         # If no good split found, create leaf node
         if best_feature is None or best_gain <= 0:
             most_common_class = Counter(y).most_common(1)[0][0]
-            return DecisionTreeNode(value=most_common_class)
+            return DecisionTreeNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         # Split the data based on best split found
         left_mask = X[:, best_feature] <= best_threshold
@@ -268,10 +287,10 @@ class DecisionTree:
         X_left, y_left = X[left_mask], y[left_mask]
         X_right, y_right = X[right_mask], y[right_mask]
         
-        # Check minimum samples per leaf constraint
+        # Check minimum samples per leaf constraint (double check)
         if len(y_left) < self.min_samples_leaf or len(y_right) < self.min_samples_leaf:
             most_common_class = Counter(y).most_common(1)[0][0]
-            return DecisionTreeNode(value=most_common_class)
+            return DecisionTreeNode(value=most_common_class, samples=n_samples, impurity=current_impurity)
         
         # Recursively build left and right subtrees
         left_subtree = self._build_tree(X_left, y_left, depth + 1)
@@ -282,7 +301,9 @@ class DecisionTree:
             feature_index=best_feature,
             threshold=best_threshold,
             left=left_subtree,
-            right=right_subtree
+            right=right_subtree,
+            samples=n_samples,
+            impurity=current_impurity
         )
     
     def fit(self, X, y, feature_names=None):
@@ -313,6 +334,9 @@ class DecisionTree:
         if isinstance(y, pd.Series):
             y = y.values
         
+        # Store number of features
+        self.n_features = X.shape[1]
+        
         print(f"Training Decision Tree...")
         print(f"Dataset: {X.shape[0]} samples, {X.shape[1]} features")
         print(f"Classes: {len(np.unique(y))} unique classes")
@@ -323,8 +347,62 @@ class DecisionTree:
         # Build the tree starting from root
         self.root = self._build_tree(X, y)
         
+        # Calculate feature importances
+        self._calculate_feature_importances(X, y)
+        
         print("✅ Decision Tree training completed!")
         return self
+    
+    def _calculate_feature_importances(self, X, y):
+        """
+        Calculate feature importance based on impurity decrease
+        Features that provide more impurity reduction are more important
+        
+        Parameters:
+        -----------
+        X : array-like, shape (n_samples, n_features)
+            Training feature matrix
+        y : array-like, shape (n_samples,)
+            Training target labels
+        """
+        # Initialize importance scores
+        importances = np.zeros(self.n_features)
+        
+        def calculate_importance_recursive(node, n_node_samples):
+            """Recursively calculate importance for each feature used in tree"""
+            if node.value is not None:  # Leaf node
+                return
+            
+            # Calculate importance for this split
+            feature_idx = node.feature_index
+            
+            # Get left and right child information
+            n_left = node.left.samples
+            n_right = node.right.samples
+            
+            # Calculate weighted impurity decrease
+            importance = (n_node_samples / X.shape[0]) * (
+                node.impurity - 
+                (n_left / n_node_samples) * node.left.impurity -
+                (n_right / n_node_samples) * node.right.impurity
+            )
+            
+            # Add to feature importance
+            importances[feature_idx] += importance
+            
+            # Recursively calculate for child nodes
+            calculate_importance_recursive(node.left, n_left)
+            calculate_importance_recursive(node.right, n_right)
+        
+        # Calculate importance starting from root
+        if self.root is not None:
+            calculate_importance_recursive(self.root, self.root.samples)
+        
+        # Normalize importances to sum to 1
+        if np.sum(importances) > 0:
+            importances = importances / np.sum(importances)
+        
+        self.feature_importances_ = importances
     
     def _predict_sample(self, x, node):
         """
@@ -377,6 +455,24 @@ class DecisionTree:
         
         return np.array(predictions)
     
+    def feature_importance(self, X=None, y=None):
+        """
+        Get feature importance scores
+        
+        Parameters:
+        -----------
+        X : array-like, optional (for compatibility)
+            Not used, kept for interface compatibility
+        y : array-like, optional (for compatibility)
+            Not used, kept for interface compatibility
+            
+        Returns:
+        --------
+        array-like
+            Feature importance scores (normalized to sum to 1)
+        """
+        return self.feature_importances_
+    
     def _get_tree_rules(self, node, rules, depth=0, condition=""):
         """
         Extract human-readable rules from the trained tree
@@ -425,76 +521,6 @@ class DecisionTree:
         if self.root:
             self._get_tree_rules(self.root, rules)
         return rules
-    
-    def feature_importance(self, X, y):
-        """
-        Calculate feature importance based on information gain
-        Features that provide more information gain are more important
-        
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Training feature matrix
-        y : array-like, shape (n_samples,)
-            Training target labels
-            
-        Returns:
-        --------
-        array-like
-            Feature importance scores (normalized to sum to 1)
-        """
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        if isinstance(y, pd.Series):
-            y = y.values
-            
-        # Initialize importance scores
-        importances = np.zeros(X.shape[1])
-        
-        def calculate_importance(node, X_subset, y_subset):
-            """Recursively calculate importance for each feature used in tree"""
-            if node.value is not None:
-                return  # Leaf node, no split
-            
-            # Get information about this split
-            feature_idx = node.feature_index
-            threshold = node.threshold
-            
-            # Split data according to this node
-            left_mask = X_subset[:, feature_idx] <= threshold
-            right_mask = X_subset[:, feature_idx] > threshold
-            
-            if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
-                return  # Invalid split
-            
-            # Calculate improvement in impurity from this split
-            parent_impurity = self._calculate_impurity(y_subset)
-            left_impurity = self._calculate_impurity(y_subset[left_mask])
-            right_impurity = self._calculate_impurity(y_subset[right_mask])
-            
-            n_parent = len(y_subset)
-            n_left = np.sum(left_mask)
-            n_right = np.sum(right_mask)
-            
-            # Weight improvement by number of samples
-            improvement = parent_impurity - (n_left/n_parent * left_impurity + 
-                                           n_right/n_parent * right_impurity)
-            
-            # Add weighted improvement to feature importance
-            importances[feature_idx] += improvement * n_parent
-            
-            # Recursively calculate for child nodes
-            calculate_importance(node.left, X_subset[left_mask], y_subset[left_mask])
-            calculate_importance(node.right, X_subset[right_mask], y_subset[right_mask])
-        
-        # Calculate importance starting from root
-        calculate_importance(self.root, X, y)
-        
-        # Normalize importances to sum to 1
-        if np.sum(importances) > 0:
-            importances = importances / np.sum(importances)
-        
-        return importances
 
 # Example usage and testing
 if __name__ == "__main__":
@@ -527,7 +553,7 @@ if __name__ == "__main__":
     print(classification_report(y_test, y_pred))
     
     # Feature importance
-    importances = dt.feature_importance(X_train, y_train)
+    importances = dt.feature_importance()
     print(f"\nFeature Importances:")
     for i, importance in enumerate(importances):
         print(f"Feature {i}: {importance:.4f}")

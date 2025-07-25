@@ -436,11 +436,11 @@ class CryptoPredictionProject:
         plt.tight_layout()
         
         # Save the visualization
-        if not os.path.exists('../results'):
-            os.makedirs('../results')
+        if not os.path.exists('results'):
+            os.makedirs('results')
         
-        plt.savefig('../results/model_comparison.png', dpi=300, bbox_inches='tight')
-        print("✅ Saved visualization to ../results/model_comparison.png")
+        plt.savefig('results/model_comparison.png', dpi=300, bbox_inches='tight')
+        print("✅ Saved visualization to results/model_comparison.png")
         
         # Show the plot and wait for user to close it
         plt.show(block=True)  # block=True keeps the window open until manually closed
@@ -526,7 +526,7 @@ class CryptoPredictionProject:
                     plt.tight_layout()
                     
                     plt.savefig('../results/feature_importance.png', dpi=300, bbox_inches='tight')
-                    print("\n✅ Saved feature importance plot to ../results/feature_importance.png")
+                    print("\n✅ Saved feature importance plot to results/feature_importance.png")
                     
                     # Show the plot and wait for user to close it
                     plt.show(block=True)  # block=True keeps the window open until manually closed
@@ -781,13 +781,13 @@ Course: Computational Learning (למידה חישובית)
 """
         
         # Save the comprehensive report
-        if not os.path.exists('../results'):
-            os.makedirs('../results')
+        if not os.path.exists('results'):
+            os.makedirs('results')
             
-        with open('../results/final_report.txt', 'w', encoding='utf-8') as f:
+        with open('results/final_report.txt', 'w', encoding='utf-8') as f:
             f.write(report)
         
-        print("✅ Final report saved to ../results/final_report.txt")
+        print("✅ Final report saved to results/final_report.txt")
         return report
 
 def main():
@@ -860,7 +860,7 @@ def main():
     
     print(f"🥇 Best Model: {best_model}")
     print(f"🎯 Best Accuracy: {best_accuracy:.4f} ({best_accuracy:.1%})")
-    print(f"📁 Results saved to: ../results/")
+    print(f"📁 Results saved to: results/")
     print(f"📊 Visualizations: model_comparison.png, feature_importance.png")
     print(f"📝 Report: final_report.txt")
     
